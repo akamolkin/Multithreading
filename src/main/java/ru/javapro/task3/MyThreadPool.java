@@ -1,53 +1,68 @@
 package ru.javapro.task3;
 
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Queue;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class MyThreadPool {
-   // private final List<Runnable> workQueue = new LinkedList<>();
-    private final BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(10);
+    private final LinkedList<Runnable> workList = new LinkedList<>();
     private volatile boolean isRunning = true;
-    private ThreadPoolExecutor threadPoolExecutor;
+    private volatile boolean isAddable = true;
     private final ReentrantLock mainLock = new ReentrantLock();
+    private HashSet<Thread> threads = new HashSet<>();
 
     public MyThreadPool(int poolSize) {
-        threadPoolExecutor = new ThreadPoolExecutor(
-                poolSize,
-                poolSize,
-                10L,
-                TimeUnit.SECONDS,
-                workQueue,
-                new ThreadPoolExecutor.CallerRunsPolicy()
-        );
-        // завершать core потоки по истечении таймаута
-        threadPoolExecutor.allowCoreThreadTimeOut(true);
-        // Запускаем предварительно потоки
-        threadPoolExecutor.prestartAllCoreThreads();
+        for (int i = 0; i < poolSize; i++) {
+            Thread thread = new Thread(new TaskWorker());
+            threads.add(thread);
+            thread.start();
+        }
     }
 
     public void execute(Runnable command) {
-        if (!isRunning) throw new IllegalStateException("Shutdowned");
-        workQueue.offer(command);
+        if (!isAddable) throw new IllegalStateException("Shutdowned");
+        mainLock.lock();
+        workList.offer(command);
+        mainLock.unlock();
     }
 
     public void shutdown() {
+        isAddable = false;
         isRunning = false;
     }
 
     public void awaitTermination() {
-        mainLock.lock();
-        try {
-            while (threadPoolExecutor.getActiveCount() > 0 ){
+        isAddable = false;
 
+        while (isRunning) {
+            mainLock.lock();
+            if (workList.size() == 0) {
+                isRunning = false;
             }
-        //    System.out.println("Active "+ threadPoolExecutor.getActiveCount());
-            threadPoolExecutor.shutdown();
-         //   return true;
-        } finally {
             mainLock.unlock();
         }
+        for (Thread thread : threads) {
+            try {
+                thread.join();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
+
+    private final class TaskWorker implements Runnable {
+        @Override
+        public void run() {
+            while (isRunning) {
+                mainLock.lock();
+                Runnable nextTask = workList.poll();
+                mainLock.unlock();
+                if (nextTask != null) {
+                    nextTask.run();
+                }
+            }
+
+        }
+    }
+
 }
